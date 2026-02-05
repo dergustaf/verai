@@ -5,26 +5,34 @@ from pinecone import Pinecone
 import anthropic
 
 # --- 1. CONFIGURATION ---
-# We use st.secrets to load keys safely from the cloud setting
+# This block allows the app to work both Locally (if you set env vars) and on Streamlit Cloud (Secrets)
 try:
+    # Try loading from Streamlit Cloud Secrets first
     os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
     os.environ["ANTHROPIC_API_KEY"] = st.secrets["ANTHROPIC_API_KEY"]
     PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
-except FileNotFoundError:
-    st.error("Secrets not found. Please set up your API keys in the dashboard.")
-    st.stop()
-    
+except (FileNotFoundError, KeyError):
+    # If running locally without secrets.toml, you can set keys here manually or via env vars
+    # (If you already set them in your previous step, you can keep them hardcoded here for local testing)
+    pass 
+    # Note: If you have hardcoded keys, paste them back here if the secrets fail locally.
+    # Example: os.environ["OPENAI_API_KEY"] = "sk-..."
+
 INDEX_HOST = "veraibot1536-o0tqsfu.svc.aped-4627-b74a.pinecone.io"
 NAMESPACES = ["book-mybook-cs", "blog-cs", "podcast_cs"]
 
-# --- 2. SETUP PAGE ---
-st.set_page_config(page_title="Vera Svach AI Coach", page_icon="🌱")
-st.title("🌱 AI Coach (Vera Svach)")
-st.markdown("Ask anything about self-development, stress, or mindfulness.")
+# --- 2. SETUP PAGE (CZECH UI) ---
+st.set_page_config(page_title="AI Kouč Věra Svach", page_icon="🌱") # Browser Tab Name
+st.title("🌱 AI Kouč (Věra Svach)") # Main Title
+st.markdown("Zeptejte se na cokoliv ohledně seberozvoje, stresu nebo mindfulness.") # Subtitle
 
 # --- 3. INITIALIZE CLIENTS ---
 @st.cache_resource
 def init_clients():
+    # If keys are missing, stop the app nicely
+    if "OPENAI_API_KEY" not in os.environ:
+        st.error("Chybí API klíče. (Missing API Keys)")
+        st.stop()
     return OpenAI(), anthropic.Anthropic(), Pinecone(api_key=PINECONE_API_KEY)
 
 openai_client, anthropic_client, pc = init_clients()
@@ -38,16 +46,12 @@ def get_embedding(text):
     return response.data[0].embedding
 
 def retrieve_context(query):
-    """
-    Returns the retrieved text chunks to prove where the answer came from.
-    """
     try:
         query_vector = get_embedding(query)
     except Exception:
-        return ""
+        return "", ""
 
     all_matches = []
-    # Search all namespaces
     for ns in NAMESPACES:
         try:
             results = index.query(
@@ -59,11 +63,9 @@ def retrieve_context(query):
         except Exception:
             pass
 
-    # Sort by relevance and take top 5
     sorted_matches = sorted(all_matches, key=lambda x: x['score'], reverse=True)
     
     contexts = []
-    # We create a formatted string showing the Score and Source for each chunk
     debug_text = "" 
     
     for match in sorted_matches[:5]:
@@ -73,23 +75,22 @@ def retrieve_context(query):
         
         if text_content:
             contexts.append(text_content)
-            # Create a nice label for the UI
-            debug_text += f"--- [Source: {source} | Relevance: {score:.2f}] ---\n{text_content[:300]}...\n\n"
+            # Translate "Source" and "Relevance" for the proof section
+            debug_text += f"--- [Zdroj: {source} | Relevence: {score:.2f}] ---\n{text_content[:300]}...\n\n"
             
     return "\n\n".join(contexts), debug_text
 
 def get_response(user_input):
-    # 1. Get Context AND the "Proof" (debug_text)
     context, debug_text = retrieve_context(user_input)
     
     if not context:
-        return "I am sorry, I couldn't find any relevant information in the database.", ""
+        return "Omlouvám se, ale v databázi jsem nenašla žádné relevantní informace.", ""
         
     system_prompt = f"""
     You are an AI Coach modeled after Vera Svach.
     
     CRITICAL RULE:
-    Answer based ONLY on the context below. If the answer is not in the context, say "I don't know based on the provided articles."
+    Answer based ONLY on the context below. If the answer is not in the context, say "Based on the available content, I don't know."
     
     CONTEXT:
     {context}
@@ -107,47 +108,42 @@ def get_response(user_input):
                 model=model, max_tokens=1000, temperature=0.3, system=system_prompt,
                 messages=[{"role": "user", "content": user_input}]
             )
-            # Return both the answer AND the debug source text
             return msg.content[0].text, debug_text
         except:
             continue
             
-    return "Error: Could not connect to Anthropic AI.", ""
+    return "Chyba: Nepodařilo se připojit k AI.", ""
 
 # --- 4. CHAT INTERFACE ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Display history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
-        # If there are stored sources in history, show them too (optional, but good for review)
         if "sources" in message:
-             with st.expander("🔍 View Retrieved Context (History)"):
+             # "View sources in history"
+             with st.expander("🔍 Zobrazit zdroje (Historie)"):
                 st.text(message["sources"])
 
-# User Input
-if prompt := st.chat_input("Type your question here..."):
-    # Show user message
+# Input box placeholder text translated
+if prompt := st.chat_input("Napište svou otázku..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Generate and show answer
     with st.chat_message("assistant"):
-        with st.spinner("Searching database & Thinking..."):
+        # "Searching and Thinking..." translated
+        with st.spinner("Hledám v databázi a přemýšlím..."):
             response_text, sources_text = get_response(prompt)
-            
             st.markdown(response_text)
             
-            # THE MAGIC PART: Show the sources
-            with st.expander("🔍 View Retrieved Context (Proof)"):
+            # "View Retrieved Context" translated
+            with st.expander("🔍 Zobrazit použité texty (Důkaz)"):
                 st.text(sources_text)
             
-    # Save answer to history
     st.session_state.messages.append({
         "role": "assistant", 
         "content": response_text,
-        "sources": sources_text # Save sources so they persist if you scroll up
+        "sources": sources_text
     })
